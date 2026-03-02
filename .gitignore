@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Environnement virtuel
+venv/
+.venv/
+env/
+
+# Django
+*.sqlite3
+*.log
+/backend/media/
+/backend/staticfiles/
+
+# Variables d'environnement
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pages HTML de référence (fichiers volumineux, non nécessaires au code)
+backend/store_pages/
