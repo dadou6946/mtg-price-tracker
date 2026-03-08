@@ -37,12 +37,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+
     # Third party
     'rest_framework',
     'corsheaders',
     'django_filters',
-    
+    'django_celery_beat',
+
     # Local apps
     'cards',
 ]
@@ -168,3 +169,14 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'America/Montreal'
 CELERY_RESULT_EXPIRES = 60 * 60 * 24  # 24h
+
+# Celery Beat Periodic Tasks
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    'scrape-tracked-cards-every-6h': {
+        'task': 'cards.tasks.scrape_all_task',
+        'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours at minute 0 (00:00, 06:00, 12:00, 18:00 Montreal time)
+        'options': {'expires': 5 * 60 * 60},  # Task expires after 5 hours if not executed
+    },
+}

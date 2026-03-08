@@ -186,8 +186,10 @@ def _scrape_store(scraper_class, card, store, max_retries=3):
 def scrape_card_task(self, card_id):
     """Scrape les prix d'une carte sur tous les stores actifs (en parallèle)."""
     import random
-    from cards.models import Card, Store
+    from cards.models import Card, Store, CardPrice, PriceHistory
     from scrapers import SCRAPER_REGISTRY
+    from django.utils import timezone
+    from datetime import datetime
 
     # Petit delay aléatoire pour étaler les requêtes entre workers
     delay = random.uniform(0, 1.5)
@@ -225,6 +227,29 @@ def scrape_card_task(self, card_id):
                 state='PROGRESS',
                 meta={'completed': completed, 'total': len(futures), 'store': store_name},
             )
+
+    # Sauvegarder un snapshot dans PriceHistory (NM non-foil)
+    try:
+        prices_nm = CardPrice.objects.filter(
+            card=card,
+            condition='NM',
+            foil=False
+        )
+
+        if prices_nm.exists():
+            prices_list = [float(p.price) for p in prices_nm if p.price]
+            if prices_list:
+                PriceHistory.objects.create(
+                    card=card,
+                    price_min=min(prices_list),
+                    price_max=max(prices_list),
+                    price_avg=sum(prices_list) / len(prices_list),
+                    stores_count=prices_nm.count(),
+                    in_stock_count=prices_nm.filter(in_stock=True).count(),
+                )
+    except Exception as e:
+        # Pas critique si ça échoue, juste log
+        pass
 
     return {
         'status': 'done',

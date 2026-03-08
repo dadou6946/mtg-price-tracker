@@ -197,3 +197,70 @@ class CardPrice(models.Model):
         from django.utils import timezone
         from datetime import timedelta
         return self.scraped_at > timezone.now() - timedelta(days=1)
+
+
+class PriceHistory(models.Model):
+    """
+    Historique agrégé des prix pour une carte
+
+    Snapshot quotidien des prix min/max/moyen pour tracker l'évolution.
+    Utilisé pour les graphiques et analyses de tendances.
+    """
+    # Relations
+    card = models.ForeignKey(
+        Card,
+        on_delete=models.CASCADE,
+        related_name='price_history'
+    )
+
+    # Prix agrégés (condition NM non-foil par défaut)
+    price_min = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Prix minimum trouvé"
+    )
+    price_max = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Prix maximum trouvé"
+    )
+    price_avg = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Prix moyen"
+    )
+
+    # Métadonnées
+    stores_count = models.IntegerField(
+        default=0,
+        help_text="Nombre de magasins avec ce prix"
+    )
+    in_stock_count = models.IntegerField(
+        default=0,
+        help_text="Nombre de magasins en stock"
+    )
+
+    # Timestamp
+    scraped_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date du scraping"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['card', '-scraped_at']),
+            models.Index(fields=['-scraped_at']),
+        ]
+        ordering = ['-scraped_at']
+        verbose_name = "Historique Prix"
+        verbose_name_plural = "Historiques Prix"
+        # Éviter les doublons : 1 entry par jour par carte max
+        unique_together = [['card', 'scraped_at']]
+
+    def __str__(self):
+        return f"{self.card.name} - {self.scraped_at.date()}: ${self.price_avg}"
+
+    @property
+    def price_range(self):
+        """Range de prix (max - min)"""
+        return self.price_max - self.price_min
