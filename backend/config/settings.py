@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',
     'django_celery_beat',
+    'drf_spectacular',
 
     # Local apps
     'cards',
@@ -176,6 +177,53 @@ REST_FRAMEWORK = {
         'scrape': '10/hour',
         'import': '10/hour',
     },
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+# OpenAPI / Swagger Configuration
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'MTG Price Tracker API',
+    'DESCRIPTION': 'Track Magic: The Gathering card prices across Montreal stores',
+    'VERSION': '1.0.0',
+    'SERVE_PERMISSIONS': ['rest_framework.permissions.AllowAny'],  # Allow docs without auth
+    'AUTHENTICATION_WHITELIST': ['rest_framework_simplejwt.authentication.JWTAuthentication'],
+    'CONTACT': {
+        'name': 'MTG Price Tracker',
+        'email': 'david@example.com',
+    },
+    'LICENSE': {
+        'name': 'MIT',
+    },
+    'SCHEMES': ['http', 'https'],
+    'SERVERS': [
+        {'url': 'http://localhost:8000', 'description': 'Local development'},
+        {'url': 'https://api.mtg-price-tracker.com', 'description': 'Production'},
+    ],
+    'TAGS': [
+        {
+            'name': 'Cards',
+            'description': 'Card management and retrieval',
+        },
+        {
+            'name': 'Stores',
+            'description': 'Store information',
+        },
+        {
+            'name': 'Prices',
+            'description': 'Card pricing data',
+        },
+        {
+            'name': 'Async Tasks',
+            'description': 'Asynchronous operations (import, scrape)',
+        },
+        {
+            'name': 'Authentication',
+            'description': 'JWT token management',
+        },
+    ],
+    'POSTPROCESSING_HOOKS': [
+        'drf_spectacular.hooks.postprocess_schema_enums',
+    ],
 }
 
 # Celery Configuration

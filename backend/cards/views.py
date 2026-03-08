@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.utils import extend_schema, extend_schema_field, OpenApiParameter, OpenApiTypes
 
 from .models import Card, Store, CardPrice
 from .serializers import (
@@ -18,8 +19,14 @@ logger = logging.getLogger('cards.views')
 
 
 class StoreViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API endpoints for store management.
+
+    Returns list of active game stores in Montreal where MTG cards are sold.
+    """
     queryset = Store.objects.filter(is_active=True)
     serializer_class = StoreSerializer
+    tags = ['Stores']
 
 
 class CardViewSet(viewsets.ModelViewSet):
@@ -65,13 +72,17 @@ class CardViewSet(viewsets.ModelViewSet):
             'card': serializer.data,
         })
 
+    @extend_schema(
+        tags=['Async Tasks'],
+        description='Import a single card from Scryfall API (async). Returns task_id for polling.',
+    )
     @action(detail=False, methods=['post'], url_path='import', throttle_classes=[ImportThrottle])
     def import_card(self, request):
         """
-        Importe une carte depuis Scryfall.
+        Import a single card from Scryfall API (async).
 
-        Body: { "name": "Goldspan Dragon", "set_code": "KHM", "track": false }
-        Retourne: { "task_id": "...", "status": "queued" }
+        Body: { "name": "Goldspan Dragon", "set_code": "KHM", "track": true }
+        Returns: { "task_id": "...", "status": "queued" }
         """
         name = request.data.get('name', '').strip()
         if not name:
