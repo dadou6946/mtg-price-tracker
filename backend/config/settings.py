@@ -199,6 +199,11 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+# Celery Task Failure Handling (Dead-Letter Queue)
+CELERY_TASK_ACKS_LATE = True  # Tasks ack after execution, before retry
+CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Reject task if worker dies
+CELERY_ENABLE_UTC = False  # Use local timezone (Montreal)
+
 # Logging Configuration
 import os
 LOGGING = {

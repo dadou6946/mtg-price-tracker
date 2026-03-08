@@ -382,3 +382,102 @@ class PriceHistory(models.Model):
     def price_range(self):
         """Range de prix (max - min)"""
         return self.price_max - self.price_min
+
+
+class TaskFailureLog(models.Model):
+    """
+    Dead-letter queue: logs des tâches Celery qui ont échoué.
+
+    Permet de tracker, retenter, et analyser les défaillances.
+    """
+    # Tâche
+    task_name = models.CharField(
+        max_length=255,
+        help_text="Nom de la tâche Celery (ex: cards.tasks.import_card_task)"
+    )
+    task_id = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="ID unique de la tâche Celery"
+    )
+
+    # Arguments
+    task_args = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Arguments positionnels de la tâche"
+    )
+    task_kwargs = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Arguments nommés de la tâche"
+    )
+
+    # Erreur
+    error_type = models.CharField(
+        max_length=100,
+        help_text="Type d'erreur (TIMEOUT, RATE_LIMITED, UNKNOWN, etc.)"
+    )
+    error_message = models.TextField(
+        help_text="Message d'erreur complet"
+    )
+    traceback = models.TextField(
+        blank=True,
+        help_text="Stack trace complète"
+    )
+
+    # Tentatives
+    attempt_count = models.IntegerField(
+        default=1,
+        help_text="Nombre de tentatives effectuées"
+    )
+    max_retries = models.IntegerField(
+        default=3,
+        help_text="Nombre maximum de retries configuré"
+    )
+
+    # Statut
+    is_retryable = models.BooleanField(
+        default=True,
+        help_text="True si la tâche peut être retentée manuellement"
+    )
+    is_resolved = models.BooleanField(
+        default=False,
+        help_text="True si la tâche a été résolue/retentée avec succès"
+    )
+
+    # Timestamps
+    failed_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date de la défaillance"
+    )
+    resolved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Date de la résolution (si applicable)"
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['task_name', '-failed_at']),
+            models.Index(fields=['error_type', '-failed_at']),
+            models.Index(fields=['-failed_at']),
+            models.Index(fields=['is_resolved']),
+        ]
+        ordering = ['-failed_at']
+        verbose_name = "Tâche Failée"
+        verbose_name_plural = "Tâches Failées"
+
+    def __str__(self):
+        return f"{self.task_name} (attempt {self.attempt_count}) - {self.error_type}"
+
+    def mark_resolved(self):
+        """Marquer la tâche comme résolue."""
+        self.is_resolved = True
+        self.resolved_at = timezone.now()
+        self.save(update_fields=['is_resolved', 'resolved_at'])
+
+    @property
+    def can_retry(self):
+        """True si la tâche peut être retentée."""
+        return self.is_retryable and not self.is_resolved and self.attempt_count < self.max_retries

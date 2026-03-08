@@ -3,6 +3,11 @@ import logging
 import requests
 from celery import shared_task, group, chord
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from cards.retry_utils import (
+    retry_with_backoff,
+    categorize_error,
+    extract_retry_after,
+)
 
 logger = logging.getLogger('cards.tasks')
 
@@ -15,9 +20,13 @@ def _extract_image_url(card_data):
     return ''
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=(requests.RequestException,), retry_kwargs={'max_retries': 3, 'countdown': 5})
 def import_card_task(self, name, set_code=None, track=False):
-    """Importe une carte depuis Scryfall et la sauvegarde en BD."""
+    """Importe une carte depuis Scryfall et la sauvegarde en BD.
+
+    Celery auto-retries on requests.RequestException (connection error, timeout, etc.)
+    up to 3 times with 5 second delay between attempts.
+    """
     from cards.models import Card
 
     logger.info(f"Starting import_card_task: name={name}, set_code={set_code}, track={track}")
@@ -35,12 +44,21 @@ def import_card_task(self, name, set_code=None, track=False):
     except requests.HTTPError as e:
         if e.response.status_code == 404:
             logger.warning(f"Card not found on Scryfall: {name}")
-            return {'status': 'error', 'message': f"Carte '{name}' introuvable sur Scryfall"}
-        logger.error(f"Scryfall HTTP error {e.response.status_code}")
-        return {'status': 'error', 'message': f"Erreur Scryfall HTTP {e.response.status_code}"}
+            return {
+                'status': 'error',
+                'message': f"Carte '{name}' introuvable sur Scryfall",
+                'error_type': 'NOT_FOUND',
+            }
+        logger.error(f"Scryfall HTTP error {e.response.status_code}: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f"Erreur Scryfall HTTP {e.response.status_code}",
+            'error_type': 'SERVER_ERROR' if e.response.status_code >= 500 else 'UNKNOWN',
+        }
     except requests.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        return {'status': 'error', 'message': str(e)}
+        logger.error(f"Request error (will auto-retry via Celery): {str(e)}")
+        # Celery will auto-retry this task up to 3 times
+        raise
 
     existing = Card.objects.filter(scryfall_id=data['id']).first()
     if existing:
@@ -81,9 +99,13 @@ def import_card_task(self, name, set_code=None, track=False):
     }
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=(requests.RequestException,), retry_kwargs={'max_retries': 3, 'countdown': 5})
 def import_set_task(self, set_code, rarities=None, track=False):
-    """Importe toutes les cartes d'un set depuis Scryfall selon les raretés choisies."""
+    """Importe toutes les cartes d'un set depuis Scryfall selon les raretés choisies.
+
+    Pagination automatique avec progress tracking.
+    Celery auto-retries on network errors up to 3 times.
+    """
     from cards.models import Card
 
     if rarities is None:
@@ -107,10 +129,22 @@ def import_set_task(self, set_code, rarities=None, track=False):
             response.raise_for_status()
         except requests.HTTPError as e:
             if e.response.status_code == 404:
-                return {'status': 'error', 'message': f"Set '{set_code}' introuvable sur Scryfall"}
-            return {'status': 'error', 'message': f"Erreur Scryfall HTTP {e.response.status_code}"}
+                logger.warning(f"Set not found on Scryfall: {set_code}")
+                return {
+                    'status': 'error',
+                    'message': f"Set '{set_code}' introuvable sur Scryfall",
+                    'error_type': 'NOT_FOUND',
+                }
+            logger.error(f"Scryfall HTTP error {e.response.status_code}")
+            return {
+                'status': 'error',
+                'message': f"Erreur Scryfall HTTP {e.response.status_code}",
+                'error_type': 'SERVER_ERROR' if e.response.status_code >= 500 else 'UNKNOWN',
+            }
         except requests.RequestException as e:
-            return {'status': 'error', 'message': str(e)}
+            logger.error(f"Request error during set import (will auto-retry): {str(e)}")
+            # Celery will auto-retry this task
+            raise
 
         data = response.json()
         if data.get('object') == 'error':
@@ -168,47 +202,63 @@ def import_set_task(self, set_code, rarities=None, track=False):
 
 
 def _scrape_store(scraper_class, card, store, max_retries=3):
-    """Scrape une carte sur un seul store (pour parallélisation) avec retries et circuit breaker."""
-    import time
+    """Scrape une carte sur un seul store avec retry, backoff+jitter, et circuit breaker.
+
+    Returns:
+        (store_name, result_dict) where result_dict contains:
+        - On success: {'created': int, 'updated': int}
+        - On failure: {'error': str, 'error_type': str, 'recoverable': bool}
+    """
     from cards.models import StoreCircuitBreaker
 
     # Vérifier le circuit breaker
     try:
         cb = StoreCircuitBreaker.objects.get(store=store)
         if not cb.is_available():
-            return store.name, {'error': f'Circuit breaker OPEN (erreurs: {cb.error_count}/{cb.error_threshold})'}
+            return store.name, {
+                'error': f'Circuit breaker OPEN (erreurs: {cb.error_count}/{cb.error_threshold})',
+                'error_type': 'CIRCUIT_BREAKER_OPEN',
+                'recoverable': True,
+            }
     except StoreCircuitBreaker.DoesNotExist:
-        # Créer un circuit breaker s'il n'existe pas
         cb = StoreCircuitBreaker.objects.create(store=store)
 
-    for attempt in range(max_retries):
-        try:
-            scraper = scraper_class()
-            created, updated = scraper.save_prices(card, store)
+    def scrape_fn():
+        scraper = scraper_class()
+        return scraper.save_prices(card, store)
 
-            # Succès : réinitialiser les erreurs
-            cb.record_success()
-            return store.name, {'created': created, 'updated': updated}
-        except Exception as e:
-            error_msg = str(e).lower()
-            is_db_locked = 'database is locked' in error_msg or 'locked' in error_msg
-            is_rate_limited = '429' in error_msg or 'too many requests' in error_msg
-            is_service_unavailable = '503' in error_msg or 'service unavailable' in error_msg
+    def on_retry(attempt, error_type, wait_time):
+        logger.warning(
+            f"Retrying {store.name} in {wait_time:.1f}s. "
+            f"Type: {error_type}, Attempt: {attempt}/{max_retries + 1}"
+        )
 
-            should_retry = (is_db_locked or is_rate_limited or is_service_unavailable) and attempt < max_retries - 1
+    try:
+        created, updated = retry_with_backoff(
+            scrape_fn,
+            max_retries=max_retries,
+            base_seconds=1,
+            on_retry=on_retry,
+        )
+        cb.record_success()
+        return store.name, {'created': created, 'updated': updated}
 
-            if should_retry:
-                # Retry avec backoff exponentiel: 1s, 2s, 4s...
-                wait_time = 1 * (2 ** attempt)
-                time.sleep(wait_time)
-                continue
+    except Exception as e:
+        error_type, is_retryable = categorize_error(e)
 
-            # Dernier essai ou erreur non-retry → enregistrer l'erreur et retourner
-            is_circuit_error = is_rate_limited or is_service_unavailable
-            if is_circuit_error:
-                cb.record_error()
+        # Enregistrer les erreurs de rate limit / service unavailable pour circuit breaker
+        if error_type in ('RATE_LIMITED', 'SERVICE_UNAVAILABLE'):
+            cb.record_error()
 
-            return store.name, {'error': str(e)}
+        logger.error(
+            f"Scrape failed for {store.name}. Type: {error_type}, Error: {str(e)}"
+        )
+
+        return store.name, {
+            'error': str(e),
+            'error_type': error_type,
+            'recoverable': is_retryable,
+        }
 
 
 @shared_task(bind=True)
