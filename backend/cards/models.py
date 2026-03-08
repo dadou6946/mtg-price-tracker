@@ -1,7 +1,10 @@
 # backend/apps/cards/models.py
 
+import logging
 from django.db import models
 from django.utils import timezone
+
+logger = logging.getLogger('cards.models')
 
 
 class Store(models.Model):
@@ -94,9 +97,12 @@ class StoreCircuitBreaker(models.Model):
         """Enregistre un succès (réinitialise les erreurs)."""
         if self.state == self.HALF_OPEN:
             # Récupération après OPEN
+            logger.info(f"Circuit breaker {self.store.name}: HALF_OPEN -> CLOSED (recovered)")
             self.state = self.CLOSED
             self.recovered_count += 1
             self.closed_at = timezone.now()
+        else:
+            logger.debug(f"Circuit breaker {self.store.name}: success, error_count reset")
 
         self.error_count = 0
         self.save(update_fields=['state', 'error_count', 'recovered_count', 'closed_at'])
@@ -107,6 +113,7 @@ class StoreCircuitBreaker(models.Model):
 
         # Si erreur en HALF_OPEN, repasser immédiatement en OPEN (test échoué)
         if self.state == self.HALF_OPEN:
+            logger.warning(f"Circuit breaker {self.store.name}: HALF_OPEN -> OPEN (recovery failed)")
             self.state = self.OPEN
             self.error_count = 1
             self.total_errors += 1
@@ -122,8 +129,11 @@ class StoreCircuitBreaker(models.Model):
 
         if self.error_count >= self.error_threshold:
             # Passage en OPEN
+            logger.warning(f"Circuit breaker {self.store.name}: CLOSED -> OPEN (threshold reached: {self.error_count}/{self.error_threshold})")
             self.state = self.OPEN
             self.opened_at = timezone.now()
+        else:
+            logger.debug(f"Circuit breaker {self.store.name}: error #{self.error_count}/{self.error_threshold}")
 
         self.save(update_fields=['state', 'error_count', 'total_errors', 'last_error_at', 'opened_at'])
 

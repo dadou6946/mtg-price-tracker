@@ -1,7 +1,10 @@
 import time
+import logging
 import requests
 from celery import shared_task, group, chord
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger('cards.tasks')
 
 
 def _extract_image_url(card_data):
@@ -17,6 +20,8 @@ def import_card_task(self, name, set_code=None, track=False):
     """Importe une carte depuis Scryfall et la sauvegarde en BD."""
     from cards.models import Card
 
+    logger.info(f"Starting import_card_task: name={name}, set_code={set_code}, track={track}")
+
     if set_code:
         url = f"https://api.scryfall.com/cards/named?exact={requests.utils.quote(name)}&set={set_code}"
     else:
@@ -26,15 +31,20 @@ def import_card_task(self, name, set_code=None, track=False):
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
+        logger.info(f"Successfully fetched card from Scryfall: {data['name']}")
     except requests.HTTPError as e:
         if e.response.status_code == 404:
+            logger.warning(f"Card not found on Scryfall: {name}")
             return {'status': 'error', 'message': f"Carte '{name}' introuvable sur Scryfall"}
+        logger.error(f"Scryfall HTTP error {e.response.status_code}")
         return {'status': 'error', 'message': f"Erreur Scryfall HTTP {e.response.status_code}"}
     except requests.RequestException as e:
+        logger.error(f"Request error: {str(e)}")
         return {'status': 'error', 'message': str(e)}
 
     existing = Card.objects.filter(scryfall_id=data['id']).first()
     if existing:
+        logger.info(f"Card already exists in DB: {data['name']}")
         return {
             'status': 'skipped',
             'message': 'Carte deja en BD',
@@ -56,6 +66,8 @@ def import_card_task(self, name, set_code=None, track=False):
         image_url=_extract_image_url(data),
         is_tracked=track,
     )
+
+    logger.info(f"Card created: {card.name} ({card.set_code} #{card.collector_number})")
 
     return {
         'status': 'created',
@@ -387,11 +399,14 @@ def scrape_tracked_cards_batched_task(self, batch_size=50):
     total = len(cards_ids)
 
     if total == 0:
+        logger.info('Aucune carte trackee')
         return {'status': 'done', 'message': 'Aucune carte trackee', 'total_cards': 0}
 
     # Split en batches
     batches = [cards_ids[i : i + batch_size] for i in range(0, len(cards_ids), batch_size)]
     num_batches = len(batches)
+
+    logger.info(f"Starting batch scrape: {total} cards in {num_batches} batches of {batch_size}")
 
     # Update progress
     self.update_state(
@@ -421,6 +436,8 @@ def scrape_tracked_cards_batched_task(self, batch_size=50):
         callback = aggregate_scrape_results.s()
 
     job = chord(scrape_card_task.s(card_id) for card_id in first_batch)(callback)
+
+    logger.info(f"Batch scrape queued: job_id={job.id}")
 
     return {
         'status': 'processing',

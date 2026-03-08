@@ -1,3 +1,4 @@
+import logging
 from celery.result import AsyncResult
 from rest_framework import viewsets, filters, status
 from rest_framework.decorators import action
@@ -11,6 +12,9 @@ from .serializers import (
     StoreSerializer, CardPriceSerializer,
 )
 from .tasks import import_card_task, import_set_task, scrape_card_task, scrape_all_task
+from .throttling import ScrapeThrottle, ImportThrottle
+
+logger = logging.getLogger('cards.views')
 
 
 class StoreViewSet(viewsets.ReadOnlyModelViewSet):
@@ -61,7 +65,7 @@ class CardViewSet(viewsets.ModelViewSet):
             'card': serializer.data,
         })
 
-    @action(detail=False, methods=['post'], url_path='import')
+    @action(detail=False, methods=['post'], url_path='import', throttle_classes=[ImportThrottle])
     def import_card(self, request):
         """
         Importe une carte depuis Scryfall.
@@ -71,15 +75,17 @@ class CardViewSet(viewsets.ModelViewSet):
         """
         name = request.data.get('name', '').strip()
         if not name:
+            logger.warning("Import card requested without name")
             return Response({'error': 'Le champ "name" est requis.'}, status=status.HTTP_400_BAD_REQUEST)
 
         set_code = request.data.get('set_code', '').strip().upper() or None
         track = bool(request.data.get('track', False))
 
+        logger.info(f"Queuing import_card_task: {name} (set={set_code}, track={track})")
         task = import_card_task.delay(name, set_code, track)
         return Response({'task_id': task.id, 'status': 'queued'}, status=status.HTTP_202_ACCEPTED)
 
-    @action(detail=False, methods=['post'], url_path='import_set')
+    @action(detail=False, methods=['post'], url_path='import_set', throttle_classes=[ImportThrottle])
     def import_set(self, request):
         """
         Importe toutes les cartes d'un set depuis Scryfall.
@@ -105,7 +111,7 @@ class CardViewSet(viewsets.ModelViewSet):
         task = import_set_task.delay(set_code, rarities, track)
         return Response({'task_id': task.id, 'status': 'queued'}, status=status.HTTP_202_ACCEPTED)
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], throttle_classes=[ScrapeThrottle])
     def scrape(self, request, pk=None):
         """
         Scrape les prix de cette carte sur tous les stores actifs.
@@ -123,6 +129,8 @@ class ScrapeAllView(APIView):
     Lance un scrape complet de toutes les cartes trackées.
     Retourne: { "task_id": "...", "status": "queued" }
     """
+    throttle_classes = [ScrapeThrottle]
+
     def post(self, request):
         task = scrape_all_task.delay()
         return Response({'task_id': task.id, 'status': 'queued'}, status=status.HTTP_202_ACCEPTED)
