@@ -116,7 +116,7 @@ class GoblinArgentScraper(BaseScraper):
         product_url = f"{self.BASE_URL}/fr/products/{handle}"
 
         for variant in product.get('variants', []):
-            sku = variant.get('sku', '')
+            sku = variant.get('sku') or ''
             public_title = variant.get('public_title', '')
 
             # Condition et foil depuis public_title

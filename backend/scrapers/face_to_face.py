@@ -139,11 +139,15 @@ class FaceToFaceScraper(BaseScraper):
         return variants_list
 
     # --- Extracteurs de champs depuis le SKU ---
-    # Format SKU : TYPE-GAME-SET-COLLECTOR-LANG-CONDITION[-FOIL]
-    # Exemple   : MTG-SINGLE-DMU-107-ENG-NM-F
+    # Ancien format : MTG-SINGLE-SET-COLLECTOR-LANG-CONDITION[-FOIL]
+    #   ex: MTG-SINGLE-DMU-107-ENG-NM-F
+    # Nouveau format : M-SET-CARDNAME-COLLECTOR-CONDITION-FOIL
+    #   ex: M-KHM-Goldspan_D-139-NM-NF
 
     def _extract_set_code(self, sku):
         parts = sku.split('-')
+        if parts[0] == 'M':
+            return parts[1] if len(parts) > 1 else None
         return parts[2] if len(parts) > 2 else None
 
     def _extract_collector_number(self, sku):
@@ -152,14 +156,20 @@ class FaceToFaceScraper(BaseScraper):
 
     def _extract_language_code(self, sku):
         parts = sku.split('-')
+        if parts[0] == 'M':
+            return 'ENG'  # Nouveau format sans champ langue, EN par défaut
         return parts[4] if len(parts) > 4 else None
 
     def _extract_condition_code(self, sku):
         parts = sku.split('-')
+        if parts[0] == 'M':
+            return parts[4] if len(parts) > 4 else 'NM'
         return parts[5] if len(parts) > 5 else 'NM'
 
     def _is_foil(self, sku):
         parts = sku.split('-')
+        if parts[0] == 'M':
+            return len(parts) > 5 and parts[5] == 'F'
         return len(parts) > 6 and parts[6] in ('F', 'SF')
 
 

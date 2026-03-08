@@ -31,7 +31,7 @@ class Command(BaseCommand):
         track = not options.get('no_track', False)
         
         self.stdout.write(f"\n{'='*60}")
-        self.stdout.write(f"📥 Import de {len(card_names)} carte(s) depuis Scryfall")
+        self.stdout.write(f"Import de {len(card_names)} carte(s) depuis Scryfall")
         self.stdout.write(f"{'='*60}\n")
         
         imported = 0
@@ -52,11 +52,11 @@ class Command(BaseCommand):
         
         # Résumé
         self.stdout.write(f"\n{'='*60}")
-        self.stdout.write(self.style.SUCCESS(f"✅ {imported} carte(s) importée(s)"))
+        self.stdout.write(self.style.SUCCESS(f"OK: {imported} carte(s) importee(s)"))
         if skipped > 0:
-            self.stdout.write(self.style.WARNING(f"⏭️  {skipped} carte(s) déjà existante(s)"))
+            self.stdout.write(self.style.WARNING(f"SKIP: {skipped} carte(s) deja existante(s)"))
         if errors > 0:
-            self.stdout.write(self.style.ERROR(f"❌ {errors} erreur(s)"))
+            self.stdout.write(self.style.ERROR(f"ERREUR: {errors} erreur(s)"))
         self.stdout.write(f"{'='*60}\n")
 
     def import_card(self, card_name, set_code=None, track=True):
@@ -80,7 +80,7 @@ class Command(BaseCommand):
             url = f"https://api.scryfall.com/cards/named?fuzzy={card_name}"
         
         try:
-            self.stdout.write(f"🔍 Recherche: {card_name}" + (f" ({set_code})" if set_code else ""))
+            self.stdout.write(f"Recherche: {card_name}" + (f" ({set_code})" if set_code else ""))
             
             response = requests.get(url, timeout=10)
             response.raise_for_status()
@@ -91,7 +91,7 @@ class Command(BaseCommand):
             
             if existing:
                 self.stdout.write(
-                    self.style.WARNING(f"   ⏭️  Déjà existante: {existing.name} ({existing.set_code})")
+                    self.style.WARNING(f"   SKIP: Deja existante: {existing.name} ({existing.set_code})")
                 )
                 return 'skipped'
             
@@ -117,7 +117,7 @@ class Command(BaseCommand):
             
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"   ✅ Importée: {card.name} ({card.set_code}) - {card.rarity}"
+                    f"   OK: {card.name} ({card.set_code}) - {card.rarity}"
                 )
             )
             
@@ -126,22 +126,22 @@ class Command(BaseCommand):
         except requests.HTTPError as e:
             if e.response.status_code == 404:
                 self.stdout.write(
-                    self.style.ERROR(f"   ❌ Carte non trouvée: {card_name}")
+                    self.style.ERROR(f"   ERREUR: Carte non trouvée: {card_name}")
                 )
             else:
                 self.stdout.write(
-                    self.style.ERROR(f"   ❌ Erreur HTTP {e.response.status_code}: {card_name}")
+                    self.style.ERROR(f"   ERREUR: Erreur HTTP {e.response.status_code}: {card_name}")
                 )
             return 'error'
         
         except requests.RequestException as e:
             self.stdout.write(
-                self.style.ERROR(f"   ❌ Erreur réseau pour {card_name}: {e}")
+                self.style.ERROR(f"   ERREUR: Erreur réseau pour {card_name}: {e}")
             )
             return 'error'
         
         except Exception as e:
             self.stdout.write(
-                self.style.ERROR(f"   ❌ Erreur inattendue pour {card_name}: {e}")
+                self.style.ERROR(f"   ERREUR: Erreur inattendue pour {card_name}: {e}")
             )
             return 'error'
