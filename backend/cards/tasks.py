@@ -306,3 +306,110 @@ def scrape_all_task(self):
         'message': f'{total} cartes en cours de scraping en parallèle...',
         'chord_id': job.id,  # ID de la tâche callback qui aura les résultats finaux
     }
+
+
+def _batch_scrape_results(batch_results, remaining_batches, batch_num, total_batches, batch_size, total_cards):
+    """Helper pour agréger les résultats et queue la prochaine batch."""
+    if not remaining_batches:
+        # Dernière batch : aggregate tous les résultats
+        return batch_results
+
+    # Prochaine batch
+    next_batch = remaining_batches[0]
+    rest = remaining_batches[1:]
+
+    # Queue la prochaine batch
+    if rest:
+        callback = _scrape_batch_callback.s(
+            batches=rest,
+            batch_num=batch_num + 1,
+            total_batches=total_batches,
+            batch_size=batch_size,
+            total_cards=total_cards,
+        )
+    else:
+        # Dernière batch : aggregate
+        callback = aggregate_scrape_results.s()
+
+    # Lance la scrape pour la prochaine batch
+    job = chord(scrape_card_task.s(card_id) for card_id in next_batch)(callback)
+    return batch_results
+
+
+@shared_task
+def _scrape_batch_callback(batch_results, batches, batch_num, total_batches, batch_size, total_cards):
+    """Callback : traite une batch et queue la prochaine (pour scrape_tracked_cards_batched_task)."""
+    return _batch_scrape_results(
+        batch_results,
+        batches,
+        batch_num,
+        total_batches,
+        batch_size,
+        total_cards,
+    )
+
+
+@shared_task(bind=True)
+def scrape_tracked_cards_batched_task(self, batch_size=50):
+    """Scrape toutes les cartes trackées par lots de 50 pour meilleur gestion de charge.
+
+    Processe les batches séquentiellement :
+    - Batch 1 : scrape 50 cartes en parallèle
+    - Batch 2 : après batch 1, scrape 50 cartes
+    - etc.
+
+    Avantages pour le rate-limiting:
+    - Seulement 50 cartes à la fois sur les stores
+    - Respecte mieux les limites API des magasins
+    - Charge DB plus équilibrée
+    - Monitoring plus facile
+    """
+    from cards.models import Card
+
+    cards_ids = list(Card.objects.filter(is_tracked=True).values_list('id', flat=True))
+    total = len(cards_ids)
+
+    if total == 0:
+        return {'status': 'done', 'message': 'Aucune carte trackee', 'total_cards': 0}
+
+    # Split en batches
+    batches = [cards_ids[i : i + batch_size] for i in range(0, len(cards_ids), batch_size)]
+    num_batches = len(batches)
+
+    # Update progress
+    self.update_state(
+        state='PROGRESS',
+        meta={
+            'status': f'Queue {num_batches} batches de {batch_size} cartes...',
+            'total_cards': total,
+            'total_batches': num_batches,
+            'batch_size': batch_size,
+        },
+    )
+
+    # Scrape la première batch, avec callback pour les autres
+    first_batch = batches[0]
+    remaining_batches = batches[1:]
+
+    if remaining_batches:
+        callback = _scrape_batch_callback.s(
+            batches=remaining_batches,
+            batch_num=1,
+            total_batches=num_batches,
+            batch_size=batch_size,
+            total_cards=total,
+        )
+    else:
+        # Une seule batch
+        callback = aggregate_scrape_results.s()
+
+    job = chord(scrape_card_task.s(card_id) for card_id in first_batch)(callback)
+
+    return {
+        'status': 'processing',
+        'total_cards': total,
+        'total_batches': num_batches,
+        'batch_size': batch_size,
+        'message': f'{total} cartes scrapees en {num_batches} batches de {batch_size} (séquentiel)...',
+        'chord_id': job.id,
+    }
