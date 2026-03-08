@@ -174,10 +174,10 @@ CELERY_RESULT_EXPIRES = 60 * 60 * 24  # 24h
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
-    'scrape-tracked-cards-batched-every-6h': {
+    'scrape-tracked-cards-batched-every-5min': {
         'task': 'cards.tasks.scrape_tracked_cards_batched_task',
-        'schedule': crontab(minute=0, hour='*/6'),  # Every 6 hours at minute 0 (00:00, 06:00, 12:00, 18:00 Montreal time)
-        'options': {'expires': 5 * 60 * 60},  # Task expires after 5 hours if not executed
+        'schedule': crontab(minute='*/5'),  # Every 5 minutes (for testing) - change back to crontab(minute=0, hour='*/6') for production
+        'options': {'expires': 4 * 60},  # Task expires after 4 minutes if not executed
         'kwargs': {'batch_size': 50},  # Process 50 cards at a time
     },
 }
