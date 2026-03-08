@@ -11,13 +11,121 @@ class Store(models.Model):
     location = models.CharField(max_length=100, default="Montréal")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
     def __str__(self):
         return self.name
-    
+
     class Meta:
         verbose_name = "Magasin"
         verbose_name_plural = "Magasins"
+
+
+class StoreCircuitBreaker(models.Model):
+    """
+    Circuit Breaker pattern pour les magasins.
+
+    Évite de marteler un magasin qui crashe ou rate-limite.
+    États:
+    - CLOSED: Normal, les requêtes passent
+    - OPEN: Trop d'erreurs, on skipe ce magasin
+    - HALF_OPEN: Test pour voir si le magasin est revenu
+    """
+    CLOSED = 'closed'      # Normal
+    OPEN = 'open'          # Magasin down/rate-limit
+    HALF_OPEN = 'half_open'  # Test en cours
+
+    STATE_CHOICES = [
+        (CLOSED, 'Closed (Actif)'),
+        (OPEN, 'Open (Paused)'),
+        (HALF_OPEN, 'Half-Open (Testing)'),
+    ]
+
+    store = models.OneToOneField(Store, on_delete=models.CASCADE, related_name='circuit_breaker')
+
+    # État du circuit
+    state = models.CharField(max_length=20, choices=STATE_CHOICES, default=CLOSED)
+
+    # Compteur d'erreurs
+    error_count = models.IntegerField(default=0, help_text="Nombre d'erreurs consécutives")
+    error_threshold = models.IntegerField(default=5, help_text="Seuil avant OPEN")
+
+    # Timeout avant tentative de récupération
+    last_error_at = models.DateTimeField(null=True, blank=True)
+    timeout_seconds = models.IntegerField(default=300, help_text="Secondes avant HALF_OPEN (5 min par défaut)")
+
+    # Statistiques
+    total_errors = models.IntegerField(default=0, help_text="Total d'erreurs historiques")
+    recovered_count = models.IntegerField(default=0, help_text="Nombre de fois récupéré")
+
+    # Timestamps
+    opened_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.store.name} - {self.state}"
+
+    class Meta:
+        verbose_name = "Circuit Breaker"
+        verbose_name_plural = "Circuit Breakers"
+
+    def is_available(self):
+        """Retourne True si on peut scraper ce magasin."""
+        from datetime import timedelta
+        from django.utils import timezone
+
+        if self.state == self.CLOSED:
+            return True
+
+        if self.state == self.OPEN:
+            # Check si timeout écoulé pour passer en HALF_OPEN
+            if self.last_error_at:
+                elapsed = timezone.now() - self.last_error_at
+                if elapsed.total_seconds() > self.timeout_seconds:
+                    # Permet un test en transitant par HALF_OPEN
+                    self.state = self.HALF_OPEN
+                    self.save(update_fields=['state'])
+                    return True
+            return False
+
+        # HALF_OPEN: permet les requêtes (test)
+        return True
+
+    def record_success(self):
+        """Enregistre un succès (réinitialise les erreurs)."""
+        if self.state == self.HALF_OPEN:
+            # Récupération après OPEN
+            self.state = self.CLOSED
+            self.recovered_count += 1
+            self.closed_at = timezone.now()
+
+        self.error_count = 0
+        self.save(update_fields=['state', 'error_count', 'recovered_count', 'closed_at'])
+
+    def record_error(self):
+        """Enregistre une erreur, passe potentiellement en OPEN."""
+        from django.utils import timezone
+
+        # Si erreur en HALF_OPEN, repasser immédiatement en OPEN (test échoué)
+        if self.state == self.HALF_OPEN:
+            self.state = self.OPEN
+            self.error_count = 1
+            self.total_errors += 1
+            self.last_error_at = timezone.now()
+            self.opened_at = timezone.now()
+            self.save(update_fields=['state', 'error_count', 'total_errors', 'last_error_at', 'opened_at'])
+            return
+
+        # Mode CLOSED: compter les erreurs
+        self.error_count += 1
+        self.total_errors += 1
+        self.last_error_at = timezone.now()
+
+        if self.error_count >= self.error_threshold:
+            # Passage en OPEN
+            self.state = self.OPEN
+            self.opened_at = timezone.now()
+
+        self.save(update_fields=['state', 'error_count', 'total_errors', 'last_error_at', 'opened_at'])
 
 
 class Card(models.Model):

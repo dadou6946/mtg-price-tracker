@@ -156,13 +156,26 @@ def import_set_task(self, set_code, rarities=None, track=False):
 
 
 def _scrape_store(scraper_class, card, store, max_retries=3):
-    """Scrape une carte sur un seul store (pour parallélisation) avec retries sur database locked et rate-limiting."""
+    """Scrape une carte sur un seul store (pour parallélisation) avec retries et circuit breaker."""
     import time
+    from cards.models import StoreCircuitBreaker
+
+    # Vérifier le circuit breaker
+    try:
+        cb = StoreCircuitBreaker.objects.get(store=store)
+        if not cb.is_available():
+            return store.name, {'error': f'Circuit breaker OPEN (erreurs: {cb.error_count}/{cb.error_threshold})'}
+    except StoreCircuitBreaker.DoesNotExist:
+        # Créer un circuit breaker s'il n'existe pas
+        cb = StoreCircuitBreaker.objects.create(store=store)
 
     for attempt in range(max_retries):
         try:
             scraper = scraper_class()
             created, updated = scraper.save_prices(card, store)
+
+            # Succès : réinitialiser les erreurs
+            cb.record_success()
             return store.name, {'created': created, 'updated': updated}
         except Exception as e:
             error_msg = str(e).lower()
@@ -178,7 +191,11 @@ def _scrape_store(scraper_class, card, store, max_retries=3):
                 time.sleep(wait_time)
                 continue
 
-            # Dernier essai ou erreur non-retry → retourner l'erreur
+            # Dernier essai ou erreur non-retry → enregistrer l'erreur et retourner
+            is_circuit_error = is_rate_limited or is_service_unavailable
+            if is_circuit_error:
+                cb.record_error()
+
             return store.name, {'error': str(e)}
 
 
